@@ -2,7 +2,7 @@
 
 A tactical GPS heads-up display running on an ESP32. It hosts its own Wi-Fi access point — no router needed. Connect any phone or tablet to the **GNSS-WIZARD** network, open a browser, and get a live compass, MGRS grid, satellite count, and HDOP.
 
-![GNSS Wizard HUD](docs/hud_preview.png)
+![GNSS Wizard HUD](docs/HUD_preview.png)
 
 ---
 
