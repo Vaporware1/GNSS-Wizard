@@ -1,0 +1,27 @@
+# Arduino build output
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Arduino IDE cache
+.arduino15/
+*.cache
+
+# ESP32 partition files
+spiffs.bin
+littlefs.bin
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
