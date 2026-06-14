@@ -296,8 +296,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   }
   .stat{flex:1;text-align:center;border-right:1px solid var(--grid);padding:0 4px}
   .stat:last-child{border-right:none}
-  .stat .k{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase}
-  .stat .v{font-size:19px;font-weight:700;margin-top:3px;line-height:1;letter-spacing:.5px}
+  .stat .k{font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase}
+  .stat .v{font-size:22px;font-weight:700;margin-top:3px;line-height:1;letter-spacing:.5px}
   .v.good{color:var(--phos);text-shadow:0 0 8px rgba(61,252,160,.5)}
   .v.warn{color:var(--amber);text-shadow:0 0 8px rgba(255,176,46,.45)}
   .v.bad{color:var(--red);text-shadow:0 0 8px rgba(255,77,77,.5)}
@@ -316,24 +316,24 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   .az-block{position:absolute;top:26%;left:0;right:0;text-align:center}
   .az{font-size:38px;font-weight:800;line-height:.9;letter-spacing:-1px;
       text-shadow:0 0 14px rgba(61,252,160,.55)}
-  .az .deg{font-size:19px;vertical-align:super;margin-left:1px}
-  .az-mode{font-size:11px;letter-spacing:4px;color:var(--amber);margin-top:5px}
+  .az .deg{font-size:22px;vertical-align:super;margin-left:1px}
+  .az-mode{font-size:13px;letter-spacing:4px;color:var(--amber);margin-top:5px}
 
   .mgrs-box{
     margin-top:20px;border:1px solid var(--phos-dim);border-radius:6px;
     background:linear-gradient(180deg,rgba(61,252,160,.05),transparent);
     padding:12px 14px;text-align:center;
   }
-  .mgrs-box .k{font-size:9px;letter-spacing:3px;color:var(--dim);text-transform:uppercase}
-  .mgrs{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:1px;word-spacing:4px;
+  .mgrs-box .k{font-size:11px;letter-spacing:3px;color:var(--dim);text-transform:uppercase}
+  .mgrs{font-size:30px;font-weight:700;margin-top:6px;letter-spacing:1px;word-spacing:4px;
         text-shadow:0 0 10px rgba(61,252,160,.4);min-height:30px}
-  .latlon{font-size:11px;color:var(--dim);margin-top:7px;letter-spacing:.5px}
+  .latlon{font-size:13px;color:var(--dim);margin-top:7px;letter-spacing:.5px}
 
   .controls{margin-top:18px;display:flex;flex-direction:column;gap:12px}
   .toggle{display:flex;border:1px solid var(--phos-dim);border-radius:6px;overflow:hidden}
   .toggle button{
     flex:1;background:transparent;color:var(--dim);border:none;
-    font-family:inherit;font-size:13px;font-weight:700;letter-spacing:2px;
+    font-family:inherit;font-size:15px;font-weight:700;letter-spacing:2px;
     padding:11px 0;cursor:pointer;transition:all .15s;
   }
   .toggle button.on{background:rgba(61,252,160,.14);color:var(--phos);text-shadow:0 0 8px rgba(61,252,160,.5)}
@@ -342,7 +342,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     border:1px solid var(--phos-dim);border-radius:6px;padding:11px 13px;
     background:linear-gradient(180deg,rgba(61,252,160,.04),transparent);
   }
-  .decl .lab{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:9px}
+  .decl .lab{font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:9px}
   .decl-row{display:flex;align-items:center;gap:10px}
   .step{
     width:46px;height:42px;flex:none;border:1px solid var(--phos-dim);border-radius:5px;
@@ -350,23 +350,23 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   }
   .step:active{background:rgba(61,252,160,.16)}
   .decl-val{
-    flex:1;text-align:center;font-size:24px;font-weight:700;
+    flex:1;text-align:center;font-size:28px;font-weight:700;
     text-shadow:0 0 10px rgba(61,252,160,.4)
   }
-  .decl-val small{font-size:12px;color:var(--amber);letter-spacing:1px;display:block;margin-top:2px}
-  .hint{font-size:10px;color:var(--dim);margin-top:9px;line-height:1.4;letter-spacing:.3px}
+  .decl-val small{font-size:14px;color:var(--amber);letter-spacing:1px;display:block;margin-top:2px}
+  .hint{font-size:12px;color:var(--dim);margin-top:9px;line-height:1.4;letter-spacing:.3px}
 
   .footer{margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
-  .footer .cal{font-size:10px;letter-spacing:1px;color:var(--dim)}
+  .footer .cal{font-size:12px;letter-spacing:1px;color:var(--dim)}
   .footer button{
     background:transparent;border:1px solid var(--phos-dim);border-radius:6px;
-    color:var(--amber);font-family:inherit;font-size:11px;letter-spacing:1px;
+    color:var(--amber);font-family:inherit;font-size:13px;letter-spacing:1px;
     padding:9px 12px;cursor:pointer;
   }
   .footer button:active{background:rgba(255,176,46,.12)}
 
   .banner{
-    margin-top:14px;text-align:center;font-size:11px;letter-spacing:2px;
+    margin-top:14px;text-align:center;font-size:13px;letter-spacing:2px;
     color:var(--amber);border:1px dashed var(--phos-dim);border-radius:6px;padding:8px;
   }
 </style>
