@@ -1,6 +1,6 @@
 # GNSS Wizard HUD
 
-A tactical web-based HUD for field navigation, running on an ESP32. It creates its own Wi-Fi access point — no router needed. Connect any phone or tablet, open a browser, and get a live compass, MGRS grid, and GPS status on a phosphor-green display.
+Built to be the poor man's antenna tracker.  A tactical web-based HUD for field navigation, running on an ESP32. It creates its own Wi-Fi access point — no router needed. Connect any phone or tablet, open a browser, and get a live compass, MGRS grid, and GPS status on a phosphor-green display.  Connect this to any FPV Video Rx Antenna mounted to a tripod and get instant magnetic azimuth to align your VRX to the drone while in flight. 
 
 ![GNSS Wizard HUD](docs/HUD_preview_blurred.png)
 
@@ -24,8 +24,10 @@ A tactical web-based HUD for field navigation, running on an ESP32. It creates i
 | Component | Part |
 |---|---|
 | Microcontroller | ESP32 Dev Module |
-| GPS | ARK DAN L1/L5 (6-pin JST-GH) |
-| Magnetometer | IIS2MDC (via I2C) |
+|
+| GPS | ARK DAN L1/L5 (6-pin JST-GH):https://arkelectron.com/product/ark-dan-gps/?srsltid=AfmBOooCBRMHwuc0bTSjqSHMJOUh5banI0EsZEUVEgZBW8FhMQMXiwPm
+|
+|Wifi Controlled Pan and Tilt Tripod unit : https://www.bhphotovideo.com/c/product/1880999-REG/bescor_mp101w_motorized_pan_head_with.html
 
 ### Wiring
 
