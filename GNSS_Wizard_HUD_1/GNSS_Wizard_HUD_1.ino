@@ -53,6 +53,9 @@
 #define STATUS_REG 0x67
 #define OUTX_L_REG 0x68
 
+#define DEG_TO_RAD (M_PI / 180.0)
+#define RAD_TO_DEG (180.0 / M_PI)
+
 #define CAL_MS     15000
 #define SMOOTH_N   10
 
@@ -128,6 +131,49 @@ float smoothHdg(float deg) {
   float a = atan2f(ss / n, sc / n) * 180.0f / M_PI;
   return a < 0 ? a + 360.0f : a;
 }
+// ══════════════════════════════════════════════════════════
+//  WAYPOINT  (ECEF-based azimuth / elevation / range)
+// ══════════════════════════════════════════════════════════
+static const double WGS84_A  = 6378137.0;
+static const double WGS84_F  = 1.0 / 298.257223563;
+static const double WGS84_E2 = 2*WGS84_F - WGS84_F*WGS84_F;
+
+struct Waypoint { double lat=0, lon=0; bool set=false; };
+Waypoint wp;
+double wpAzimuth=0, wpElevation=0, wpRange=0;
+bool   wpValid=false;
+
+void llaToEcef(double lat_deg, double lon_deg, double alt,
+               double &x, double &y, double &z) {
+  double lat = lat_deg * DEG_TO_RAD;
+  double lon = lon_deg * DEG_TO_RAD;
+  double slat=sin(lat), clat=cos(lat), slon=sin(lon), clon=cos(lon);
+  double N = WGS84_A / sqrt(1.0 - WGS84_E2*slat*slat);
+  x = (N+alt)*clat*clon;
+  y = (N+alt)*clat*slon;
+  z = (N*(1.0-WGS84_E2)+alt)*slat;
+}
+
+void calcWaypoint(double lat1, double lon1, double alt1,
+                  double lat2, double lon2, double alt2) {
+  double x1,y1,z1,x2,y2,z2;
+  llaToEcef(lat1,lon1,alt1,x1,y1,z1);
+  llaToEcef(lat2,lon2,alt2,x2,y2,z2);
+  double dx=x2-x1, dy=y2-y1, dz=z2-z1;
+  double phi=lat1*DEG_TO_RAD, lam=lon1*DEG_TO_RAD;
+  double sp=sin(phi),cp=cos(phi),sl=sin(lam),cl=cos(lam);
+  double e = -sl*dx + cl*dy;
+  double n = -sp*cl*dx - sp*sl*dy + cp*dz;
+  double u =  cp*cl*dx + cp*sl*dy + sp*dz;
+  double hd = sqrt(e*e + n*n);
+  wpRange     = sqrt(hd*hd + u*u);
+  double az   = atan2(e,n) * RAD_TO_DEG;
+  if (az<0) az+=360.0;
+  wpAzimuth   = az;
+  wpElevation = atan2(u,hd) * RAD_TO_DEG;
+  wpValid     = true;
+}
+
 
 // ══════════════════════════════════════════════════════════
 //  MAGNETOMETER
@@ -296,8 +342,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   }
   .stat{flex:1;text-align:center;border-right:1px solid var(--grid);padding:0 4px}
   .stat:last-child{border-right:none}
-  .stat .k{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase}
-  .stat .v{font-size:19px;font-weight:700;margin-top:3px;line-height:1;letter-spacing:.5px}
+  .stat .k{font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase}
+  .stat .v{font-size:22px;font-weight:700;margin-top:3px;line-height:1;letter-spacing:.5px}
   .v.good{color:var(--phos);text-shadow:0 0 8px rgba(61,252,160,.5)}
   .v.warn{color:var(--amber);text-shadow:0 0 8px rgba(255,176,46,.45)}
   .v.bad{color:var(--red);text-shadow:0 0 8px rgba(255,77,77,.5)}
@@ -316,24 +362,24 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   .az-block{position:absolute;top:26%;left:0;right:0;text-align:center}
   .az{font-size:38px;font-weight:800;line-height:.9;letter-spacing:-1px;
       text-shadow:0 0 14px rgba(61,252,160,.55)}
-  .az .deg{font-size:19px;vertical-align:super;margin-left:1px}
-  .az-mode{font-size:11px;letter-spacing:4px;color:var(--amber);margin-top:5px}
+  .az .deg{font-size:22px;vertical-align:super;margin-left:1px}
+  .az-mode{font-size:13px;letter-spacing:4px;color:var(--amber);margin-top:5px}
 
   .mgrs-box{
     margin-top:20px;border:1px solid var(--phos-dim);border-radius:6px;
     background:linear-gradient(180deg,rgba(61,252,160,.05),transparent);
     padding:12px 14px;text-align:center;
   }
-  .mgrs-box .k{font-size:9px;letter-spacing:3px;color:var(--dim);text-transform:uppercase}
-  .mgrs{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:1px;word-spacing:4px;
+  .mgrs-box .k{font-size:11px;letter-spacing:3px;color:var(--dim);text-transform:uppercase}
+  .mgrs{font-size:30px;font-weight:700;margin-top:6px;letter-spacing:1px;word-spacing:4px;
         text-shadow:0 0 10px rgba(61,252,160,.4);min-height:30px}
-  .latlon{font-size:11px;color:var(--dim);margin-top:7px;letter-spacing:.5px}
+  .latlon{font-size:13px;color:var(--dim);margin-top:7px;letter-spacing:.5px}
 
   .controls{margin-top:18px;display:flex;flex-direction:column;gap:12px}
   .toggle{display:flex;border:1px solid var(--phos-dim);border-radius:6px;overflow:hidden}
   .toggle button{
     flex:1;background:transparent;color:var(--dim);border:none;
-    font-family:inherit;font-size:13px;font-weight:700;letter-spacing:2px;
+    font-family:inherit;font-size:15px;font-weight:700;letter-spacing:2px;
     padding:11px 0;cursor:pointer;transition:all .15s;
   }
   .toggle button.on{background:rgba(61,252,160,.14);color:var(--phos);text-shadow:0 0 8px rgba(61,252,160,.5)}
@@ -342,7 +388,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     border:1px solid var(--phos-dim);border-radius:6px;padding:11px 13px;
     background:linear-gradient(180deg,rgba(61,252,160,.04),transparent);
   }
-  .decl .lab{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:9px}
+  .decl .lab{font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:9px}
   .decl-row{display:flex;align-items:center;gap:10px}
   .step{
     width:46px;height:42px;flex:none;border:1px solid var(--phos-dim);border-radius:5px;
@@ -350,23 +396,23 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   }
   .step:active{background:rgba(61,252,160,.16)}
   .decl-val{
-    flex:1;text-align:center;font-size:24px;font-weight:700;
+    flex:1;text-align:center;font-size:28px;font-weight:700;
     text-shadow:0 0 10px rgba(61,252,160,.4)
   }
-  .decl-val small{font-size:12px;color:var(--amber);letter-spacing:1px;display:block;margin-top:2px}
-  .hint{font-size:10px;color:var(--dim);margin-top:9px;line-height:1.4;letter-spacing:.3px}
+  .decl-val small{font-size:14px;color:var(--amber);letter-spacing:1px;display:block;margin-top:2px}
+  .hint{font-size:12px;color:var(--dim);margin-top:9px;line-height:1.4;letter-spacing:.3px}
 
   .footer{margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
-  .footer .cal{font-size:10px;letter-spacing:1px;color:var(--dim)}
+  .footer .cal{font-size:12px;letter-spacing:1px;color:var(--dim)}
   .footer button{
     background:transparent;border:1px solid var(--phos-dim);border-radius:6px;
-    color:var(--amber);font-family:inherit;font-size:11px;letter-spacing:1px;
+    color:var(--amber);font-family:inherit;font-size:13px;letter-spacing:1px;
     padding:9px 12px;cursor:pointer;
   }
   .footer button:active{background:rgba(255,176,46,.12)}
 
   .banner{
-    margin-top:14px;text-align:center;font-size:11px;letter-spacing:2px;
+    margin-top:14px;text-align:center;font-size:13px;letter-spacing:2px;
     color:var(--amber);border:1px dashed var(--phos-dim);border-radius:6px;padding:8px;
   }
 </style>
@@ -407,6 +453,15 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       <circle cx="200" cy="200" r="150" fill="none" stroke="#3dfca0" stroke-width="1" opacity=".25"/>
 
       <g id="ticks"></g>
+
+      <!-- Waypoint target marker — rotated by JS to wpAzimuth -->
+      <g id="wpMarker" style="display:none" transform="rotate(0,200,200)">
+        <polygon points="200,38 194,54 206,54" fill="#ffb02e"
+                 style="filter:drop-shadow(0 0 5px rgba(255,176,46,.9))"/>
+        <circle cx="200" cy="150" r="7" fill="none" stroke="#ffb02e" stroke-width="1.5" opacity=".8"/>
+        <line x1="200" y1="141" x2="200" y2="159" stroke="#ffb02e" stroke-width="1.2" opacity=".6"/>
+        <line x1="193" y1="150" x2="207" y2="150" stroke="#ffb02e" stroke-width="1.2" opacity=".6"/>
+      </g>
 
       <g class="needle" id="needle">
         <polygon points="200,46 210,128 200,112 190,128" fill="url(#ndl)"
@@ -449,6 +504,24 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     <div class="k">Grid &middot; MGRS</div>
     <div class="mgrs" id="mgrs">----------</div>
     <div class="latlon" id="latlon">lat --.-----   lon --.-----</div>
+  </div>
+
+  <div class="mgrs-box" style="margin-top:14px">
+    <div class="k">Waypoint Target</div>
+    <div style="margin-top:8px">
+      <input id="wpMGRS" type="text" inputmode="text" autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck="false"
+        placeholder="e.g. 18S UJ 48291 83746"
+        style="width:100%;box-sizing:border-box;background:#0a1410;border:1px solid #1c6b48;border-radius:4px;color:#3dfca0;font-family:inherit;font-size:13px;padding:8px 10px;letter-spacing:1px;text-transform:uppercase;"/>
+    </div>
+    <button onclick="setWaypoint()" style="margin-top:8px;width:100%;background:transparent;border:1px solid #1c6b48;border-radius:4px;color:#ffb02e;font-family:inherit;font-size:12px;letter-spacing:2px;padding:8px;cursor:pointer;">SET WAYPOINT</button>
+    <div id="wpInfo" style="margin-top:10px;display:none;text-align:center">
+      <span style="color:#46584f;font-size:10px;letter-spacing:2px">AZ</span>
+      <span id="wpAz" style="font-size:22px;font-weight:700;margin:0 10px 0 4px">---&deg;</span>
+      <span style="color:#46584f;font-size:10px;letter-spacing:2px">EL</span>
+      <span id="wpEl" style="font-size:22px;font-weight:700;margin:0 10px 0 4px">---&deg;</span>
+      <span style="color:#46584f;font-size:10px;letter-spacing:2px">RANGE</span>
+      <span id="wpRng" style="font-size:22px;font-weight:700;margin-left:4px">---m</span>
+    </div>
   </div>
 
   <div class="controls">
@@ -598,6 +671,7 @@ function letter100k(column,row,parm){
 function getData(){ return fetch('/status').then(r=>r.json()); }
 
 function render(d){
+  updateWaypoint(d);
   if(d.fix){
     els.fixDot.className='dot good';
     els.fixT.textContent='LOCK';
@@ -681,6 +755,66 @@ function link(ok){
   }
 }
 
+function mgrsToLatLon(mgrs){
+  var s=mgrs.replace(/\s/g,'').toUpperCase();
+  var m=s.match(/^(\d{1,2})([C-HJ-NP-X])([A-HJ-NP-Z])([A-HJ-NP-V])(\d+)$/);
+  if(!m)throw'Invalid MGRS';
+  var zone=+m[1],band=m[2],sq1=m[3],sq2=m[4],nums=m[5];
+  if(nums.length%2!==0)nums+='5';
+  var prec=nums.length>>1,sc=Math.pow(10,5-prec);
+  var E100=+nums.slice(0,prec)*sc,N100=+nums.slice(prec)*sc;
+  var COLS=['ABCDEFGH','JKLMNPQR','STUVWXYZ','ABCDEFGH','JKLMNPQR','STUVWXYZ'];
+  var ci=COLS[(zone-1)%6].indexOf(sq1);if(ci<0)throw'Bad col';
+  var E=(ci+1)*100000+E100;
+  var ROWS=['ABCDEFGHJKLMNPQRSTUV','FGHJKLMNPQRSTUVABCDE'];
+  var ri=ROWS[zone%2===0?1:0].indexOf(sq2);if(ri<0)throw'Bad row';
+  var N100f=ri*100000+N100;
+  var BANDS='CDEFGHJKLMNPQRSTUVWX';
+  var bi=BANDS.indexOf(band);if(bi<0)throw'Bad band';
+  var a=6378137,e2=0.00669437999014,k0=0.9996;
+  function mArc(ph){var e4=e2*e2,e6=e4*e2;
+    return a*((1-e2/4-3*e4/64-5*e6/256)*ph-(3*e2/8+3*e4/32+45*e6/1024)*Math.sin(2*ph)+(15*e4/256+45*e6/1024)*Math.sin(4*ph)-(35*e6/3072)*Math.sin(6*ph));}
+  var phi=(-80+bi*8)*Math.PI/180;
+  var Nf=k0*mArc(phi);
+  var northHemi=band>='N';
+  if(!northHemi)Nf+=10000000;
+  var cyc=Math.floor(Nf/2000000)*2000000;
+  var N=N100f%2000000+cyc;
+  if(N<Nf-100000)N+=2000000;
+  if(!northHemi)N-=10000000;
+  var ep2=e2/(1-e2),M=N/k0;
+  var mu=M/(a*(1-e2/4-3*e2*e2/64-5*e2*e2*e2/256));
+  var e1=(1-Math.sqrt(1-e2))/(1+Math.sqrt(1-e2));
+  var phi1=mu+(3*e1/2-27*e1*e1*e1/32)*Math.sin(2*mu)+(21*e1*e1/16-55*e1*e1*e1*e1/32)*Math.sin(4*mu)+(151*e1*e1*e1/96)*Math.sin(6*mu);
+  var sp=Math.sin(phi1),cp=Math.cos(phi1),tp=Math.tan(phi1);
+  var N1=a/Math.sqrt(1-e2*sp*sp),T1=tp*tp,C1=ep2*cp*cp;
+  var R1=a*(1-e2)/Math.pow(1-e2*sp*sp,1.5),D=(E-500000)/(N1*k0);
+  var lat=phi1-(N1*tp/R1)*(D*D/2-(5+3*T1+10*C1-4*C1*C1-9*ep2)*D*D*D*D/24+(61+90*T1+298*C1+45*T1*T1-252*ep2-3*C1*C1)*D*D*D*D*D*D/720);
+  var lon0=(zone-1)*6-180+3;
+  var lon=lon0*Math.PI/180+(D-(1+2*T1+C1)*D*D*D/6+(5-2*C1+28*T1-3*C1*C1+8*ep2+24*T1*T1)*D*D*D*D*D/120)/cp;
+  return{lat:lat*180/Math.PI,lon:lon*180/Math.PI};
+}
+function setWaypoint(){
+  var raw=document.getElementById('wpMGRS').value.trim();
+  if(!raw){alert('Enter an MGRS coordinate');return;}
+  var ll;
+  try{ll=mgrsToLatLon(raw);}catch(e){alert('Could not parse MGRS: '+e);return;}
+  fetch('/setwp?lat='+ll.lat.toFixed(6)+'&lon='+ll.lon.toFixed(6)).catch(function(){});
+}
+function updateWaypoint(d){
+  var mk=document.getElementById('wpMarker');
+  if(d.wpvalid){
+    document.getElementById('wpInfo').style.display='block';
+    document.getElementById('wpAz').textContent=Math.round(d.wpaz)+'\u00b0';
+    document.getElementById('wpEl').textContent=d.wpel.toFixed(1)+'\u00b0';
+    var rng=d.wprng>1000?(d.wprng/1000).toFixed(2)+'km':Math.round(d.wprng)+'m';
+    document.getElementById('wpRng').textContent=rng;
+    mk.style.display='';
+    mk.setAttribute('transform','rotate('+d.wpaz.toFixed(1)+',200,200)');
+  } else {
+    mk.style.display='none';
+  }
+}
 applyDecl(0);
 function tick(){ getData().then(d=>{render(d);link(true);}).catch(()=>link(false)); }
 tick();
@@ -692,14 +826,25 @@ setInterval(tick, 500);
 // ══════════════════════════════════════════════════════════
 //  WEB HANDLERS
 // ══════════════════════════════════════════════════════════
+void handleSetWaypoint() {
+  if (!server.hasArg("lat") || !server.hasArg("lon")) {
+    server.send(400, "text/plain", "missing lat/lon"); return;
+  }
+  wp.lat = server.arg("lat").toDouble();
+  wp.lon = server.arg("lon").toDouble();
+  wp.set = true;
+  server.send(200, "text/plain", "ok");
+}
+
 void handleRoot() { server.send_P(200, "text/html", PAGE_HTML); }
 
 void handleStatus() {
   bool fix = gps.location.isValid();
-  char j[320];
+  char j[420];
   snprintf(j, sizeof(j),
     "{\"fix\":%s,\"sats\":%d,\"hdop\":%.1f,\"lat\":%.6f,\"lon\":%.6f,"
-    "\"hdg\":%.1f,\"cal\":%s,\"decl\":%.1f,\"magwarn\":%s,\"fdev\":%d,\"cov\":%d}",
+    "\"hdg\":%.1f,\"cal\":%s,\"decl\":%.1f,\"magwarn\":%s,\"fdev\":%d,\"cov\":%d,"
+    "\"wpvalid\":%s,\"wpaz\":%.1f,\"wpel\":%.1f,\"wprng\":%.0f}",
     fix ? "true" : "false",
     gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
     gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
@@ -710,7 +855,9 @@ void handleStatus() {
     cfg.declination,
     magWarn ? "true" : "false",
     (int)(magDevPct * 100.0f),
-    lastCalOK ? (int)(lastCalCov * 100.0f) : 0);
+    lastCalOK ? (int)(lastCalCov * 100.0f) : 0,
+    wpValid ? "true" : "false",
+    wpAzimuth, wpElevation, wpRange);
   server.send(200, "application/json", j);
 }
 
@@ -764,6 +911,7 @@ void setup() {
   server.on("/status",  HTTP_GET, handleStatus);
   server.on("/setdecl", HTTP_GET, handleSetDecl);
   server.on("/recal",   HTTP_GET, handleRecal);
+  server.on("/setwp",    HTTP_GET, handleSetWaypoint);
   server.begin();
   Serial.println("[WEB] server on :80");
 
@@ -794,6 +942,15 @@ void loop() {
     tHdg = millis();
     float h = getAzimuth();
     if (h >= 0) lastHdg = h;
+  }
+
+  // update waypoint bearing
+  if (wp.set && gps.location.isValid()) {
+    static unsigned long tWp = 0;
+    if (millis() - tWp >= 500) {
+      tWp = millis();
+      calcWaypoint(gps.location.lat(), gps.location.lng(), 0, wp.lat, wp.lon, 0);
+    }
   }
 
   // serial heartbeat every 2 s
