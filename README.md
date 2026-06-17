@@ -1,107 +1,99 @@
 # GNSS Wizard HUD
 
-Built to be the poor man's antenna tracker.  A tactical web-based HUD for field navigation, running on an ESP32. It creates its own Wi-Fi access point — no router needed. Connect any phone or tablet, open a browser, and get a live compass, MGRS grid, and GPS status on a phosphor-green display.  Connect this to any FPV Video Rx Antenna mounted to a tripod and get instant magnetic azimuth to align your VRX to the drone while in flight. Next phase is to get this into ATAK.
+A tactical GPS heads-up display running on an ESP32. It hosts its own Wi-Fi access point — no router needed. Connect any phone or tablet to the **GNSS-WIZARD** network, open a browser, and get a live compass, MGRS grid, satellite count, HDOP, and waypoint targeting.
 
-![GNSS Wizard HUD](docs/HUD_preview_blurred.png)
+![GNSS Wizard HUD](docs/HUD_preview.png)
 
 ---
 
-## What It Does
+## Features
 
-- **Hosts its own Wi-Fi AP** — open network called `GNSS-WIZARD`, no password required
-- **Web HUD at `http://192.168.4.1`** — works on any phone or tablet browser
-- **Live compass** with magnetic heading, needle animation, and a wizard avatar at center
-- **MGRS grid coordinates** computed on-device from GPS lat/lon
-- **GPS status** — fix indicator, satellite count, and HDOP accuracy rating
-- **Magnetic declination** — configurable in 0.5° steps, saved to device flash; TRUE heading toggle applies it
-- **Magnetometer calibration** — 15-second spin calibration with quality gate (coverage + axis ratio checks)
-- **Interference detection** — flags anomalies when the live field deviates >30% from the calibrated radius
+- 📡 Live GPS fix, satellite count, and HDOP quality indicator
+- 🧭 Magnetic compass with smooth needle animation
+- 🗺️ Real-time MGRS grid coordinate display
+- 🔁 Magnetic / True north toggle (with adjustable declination)
+- ⚠️ Magnetic interference detection
+- 💾 Declination and calibration saved to flash (survives power cycles)
+- 📶 Standalone Wi-Fi AP — no router or internet required
+- 🎯 Waypoint targeting — enter any lat/lon and get live azimuth, elevation, and range
 
 ---
 
 ## Hardware
 
-| Component | Part |
+| Component | Details |
 |---|---|
-| Microcontroller | ESP32 Dev Module |
-| GPS | ARK DAN L1/L5 (6-pin JST-GH):https://arkelectron.com/product/ark-dan-gps/?srsltid=AfmBOooCBRMHwuc0bTSjqSHMJOUh5banI0EsZEUVEgZBW8FhMQMXiwPm |
-|Wifi Controlled Pan and Tilt Tripod unit | https://www.bhphotovideo.com/c/product/1880999-REG/bescor_mp101w_motorized_pan_head_with.html |
-
-### Wiring
-
-```
-ARK DAN L1/L5 (6-pin JST-GH)       ESP32 Dev Module
-─────────────────────────────       ────────────────
-5V   ──────────────────────────►    VIN
-GND  ──────────────────────────►    GND
-TX   ──────────────────────────►    GPIO 16  (RX2)
-RX   ──────────────────────────►    GPIO 17  (TX2)
-SCL  ──────────────────────────►    GPIO 22  (I2C SCL)
-SDA  ──────────────────────────►    GPIO 21  (I2C SDA)
-```
-
-- GPS baud rate: **38400**
-- Magnetometer I2C address: **0x1E**
+| Microcontroller | ESP32-WROOM-32 (Dev Module) |
+| GPS | ARK DAN L1/L5 (6-pin JST-GH, 38400 baud) |
+| Magnetometer | IIS2MDC (I2C, address 0x1E) |
 
 ---
 
-## Software Setup
+## Wiring
 
-### Requirements
+| GPS / Mag Pin | ESP32 Pin |
+|---|---|
+| 5V | VIN |
+| GND | GND |
+| GPS TX | GPIO 16 (RX2) |
+| GPS RX | GPIO 17 (TX2) |
+| SCL | GPIO 22 |
+| SDA | GPIO 21 |
 
-- [Arduino IDE](https://www.arduino.cc/en/software)
-- **Board:** ESP32 Dev Module (install via Boards Manager: `esp32` by Espressif)
-- **Library:** [TinyGPSPlus](https://github.com/mikalhart/TinyGPSPlus) by Mikal Hart (install via Library Manager)
+> **Note:** If heading reads -1 or is frozen, reseat the SDA/SCL solder joints.
 
-### Flash Instructions
+---
 
-1. Open `GNSS_Wizard_HUD_1/GNSS_Wizard_HUD_1.ino` in Arduino IDE
-2. Select **Board:** `ESP32 Dev Module`
-3. Select the correct COM port for your ESP32
-4. If the upload fails, hold the **BOOT** button on the ESP32 during upload
-5. Upload speed: `115200`
+## Required Library
 
-> **Partition note:** The default partition scheme should fit. If you get a "binary too large" error, switch to **No OTA (2MB APP / 2MB SPIFFS)** under Tools → Partition Scheme.
+Install via Arduino Library Manager:
+
+- **TinyGPSPlus** by Mikal Hart
+
+---
+
+## Arduino IDE Settings
+
+| Setting | Value |
+|---|---|
+| Board | ESP32 Dev Module |
+| Upload Speed | 115200 |
+| Partition Scheme | Default (or "No OTA (2MB APP / 2MB SPIFFS)" if binary is too large) |
+
+> Hold the **BOOT** button during upload if the ESP32 won't connect.
 
 ---
 
 ## Usage
 
-1. Power on the ESP32
-2. On your phone or tablet, connect to Wi-Fi network: **`GNSS-WIZARD`** (no password)
-3. Open a browser and go to: **`http://192.168.4.1`**
-4. On first boot with no saved calibration, the device will prompt you to rotate it — hold it level and spin it in a full circle for 15 seconds
-
-### Calibration
-
-Tap **RECALIBRATE 15s** on the HUD, then rotate the device level through a full 360° circle. The calibration is saved to flash and persists across power cycles. The quality gate requires ≥70% circle coverage and a sane axis ratio — if rejected, the previous good calibration is kept.
-
-### Magnetic Declination
-
-Use the `+` / `−` buttons to set your local declination (look it up at [NOAA's calculator](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml)). Toggle **TRUE** to apply it to the displayed heading. The value is saved to the device.
+1. Flash `GNSS_Wizard_HUD_1.ino` to your ESP32
+2. Power it on
+3. On your phone or tablet, connect to the **GNSS-WIZARD** Wi-Fi network (no password)
+4. Open a browser and go to `http://192.168.4.1`
+5. On first boot, rotate the device in a level circle to calibrate the magnetometer
 
 ---
 
-## Troubleshooting
+## Calibration
 
-| Symptom | Likely Cause | Fix |
-|---|---|---|
-| Heading always -1 or frozen | Magnetometer not found on I2C | Reseat SDA/SCL solder joints |
-| No GPS fix | Wrong baud rate or TX/RX swapped | Swap GPIO 16 and 17 |
-| Won't upload | ESP32 not in bootloader mode | Hold BOOT button during upload |
-| Binary too large | Default partition too small | Switch to "No OTA (2MB APP / 2MB SPIFFS)" |
-| Compass spins backwards | Magnetometer remounted with different orientation | Flip the `-cy` sign in `getAzimuth()` |
+Press **RECALIBRATE 15s** in the HUD and rotate the device in a full, level circle within 15 seconds. The ESP32 LED will blink during calibration and stay on when calibration is accepted. Calibration data is saved to flash.
+
+---
+
+## Waypoint Targeting
+
+Enter a target latitude and longitude in the **Waypoint Target** panel and press **SET WAYPOINT**. While your GPS has a fix, the HUD will update every 500 ms with:
+
+| Field | Description |
+|---|---|
+| **AZ** | Azimuth to target (degrees true north) |
+| **EL** | Elevation angle to target (degrees above/below horizon) |
+| **RANGE** | Distance to target (meters or km) |
+
+Targeting uses ECEF (Earth-Centered Earth-Fixed) math on the WGS84 ellipsoid for accurate results at any range.
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for full text.  
-Copyright © 2026 Vaporware1
-
----
-
-## Contributors
-
-- **Vaporware1** — hardware design, firmware, and HUD
-- **Claude** (Anthropic) — development assistance via [Claude Code](https://claude.ai/code)
+MIT — see [LICENSE](LICENSE)
