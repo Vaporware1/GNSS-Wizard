@@ -1,6 +1,6 @@
 # GNSS Wizard HUD
 
-Built to be the poor man's antenna tracker.  A tactical web-based HUD for field navigation, running on an ESP32. It creates its own Wi-Fi access point — no router needed. Connect any phone or tablet, open a browser, and get a live compass, MGRS grid, and GPS status on a phosphor-green display.  Connect this to any FPV Video Rx Antenna mounted to a tripod and get instant magnetic azimuth to align your VRX to the drone while in flight. 
+Built to be the poor man's antenna tracker.  A tactical web-based HUD for field navigation, running on an ESP32. It creates its own Wi-Fi access point — no router needed. Connect any phone or tablet, open a browser, and get a live compass, MGRS grid, and GPS status on a phosphor-green display.  Connect this to any FPV Video Rx Antenna mounted to a tripod and get instant magnetic azimuth to align your VRX to the drone while in flight. Next phase is to get this into ATAK.
 
 ![GNSS Wizard HUD](docs/HUD_preview_blurred.png)
 
