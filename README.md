@@ -24,10 +24,8 @@ Built to be the poor man's antenna tracker.  A tactical web-based HUD for field 
 | Component | Part |
 |---|---|
 | Microcontroller | ESP32 Dev Module |
-|
-| GPS | ARK DAN L1/L5 (6-pin JST-GH):https://arkelectron.com/product/ark-dan-gps/?srsltid=AfmBOooCBRMHwuc0bTSjqSHMJOUh5banI0EsZEUVEgZBW8FhMQMXiwPm
-|
-|Wifi Controlled Pan and Tilt Tripod unit | https://www.bhphotovideo.com/c/product/1880999-REG/bescor_mp101w_motorized_pan_head_with.html
+| GPS | ARK DAN L1/L5 (6-pin JST-GH):https://arkelectron.com/product/ark-dan-gps/?srsltid=AfmBOooCBRMHwuc0bTSjqSHMJOUh5banI0EsZEUVEgZBW8FhMQMXiwPm |
+|Wifi Controlled Pan and Tilt Tripod unit | https://www.bhphotovideo.com/c/product/1880999-REG/bescor_mp101w_motorized_pan_head_with.html |
 
 ### Wiring
 
