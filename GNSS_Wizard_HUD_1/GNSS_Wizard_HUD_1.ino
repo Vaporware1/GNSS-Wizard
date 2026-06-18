@@ -33,6 +33,18 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <TinyGPSPlus.h>
+#include <WiFiUDP.h>
+
+// ── TAK COT (Cursor on Target) ─────────────────────────────
+// Sends SA (situational awareness) COT XML over UDP multicast
+// every COT_INTERVAL_MS when a GPS fix is valid.
+// If UDP init or any send fails, cotOK is set false and COT is
+// silently disabled — the web HUD continues working normally.
+#define COT_MCAST       "239.2.3.1"
+#define COT_PORT        4242
+#define COT_INTERVAL_MS 5000
+#define COT_UID         "GNSS-WIZARD-1"
+#define COT_CALLSIGN    "GNSS-WIZARD"
 
 #ifndef LED_BUILTIN
   #define LED_BUILTIN 2
@@ -103,6 +115,8 @@ void saveCal() {
 // ══════════════════════════════════════════════════════════
 TinyGPSPlus gps;
 WebServer   server(80);
+WiFiUDP     cotUDP;
+bool        cotOK = false;
 
 bool  magOK       = false;
 bool  calibrating = false;
@@ -139,9 +153,9 @@ static const double WGS84_F  = 1.0 / 298.257223563;
 static const double WGS84_E2 = 2*WGS84_F - WGS84_F*WGS84_F;
 
 struct Waypoint { double lat=0, lon=0; bool set=false; };
-Waypoint wp;
-double wpAzimuth=0, wpElevation=0, wpRange=0;
-bool   wpValid=false;
+Waypoint wps[10];
+double wpAzimuth[10]={}, wpElevation[10]={}, wpRange[10]={};
+bool   wpValid[10]={};
 
 void llaToEcef(double lat_deg, double lon_deg, double alt,
                double &x, double &y, double &z) {
@@ -155,7 +169,7 @@ void llaToEcef(double lat_deg, double lon_deg, double alt,
 }
 
 void calcWaypoint(double lat1, double lon1, double alt1,
-                  double lat2, double lon2, double alt2) {
+                  double lat2, double lon2, double alt2, int idx) {
   double x1,y1,z1,x2,y2,z2;
   llaToEcef(lat1,lon1,alt1,x1,y1,z1);
   llaToEcef(lat2,lon2,alt2,x2,y2,z2);
@@ -166,12 +180,12 @@ void calcWaypoint(double lat1, double lon1, double alt1,
   double n = -sp*cl*dx - sp*sl*dy + cp*dz;
   double u =  cp*cl*dx + cp*sl*dy + sp*dz;
   double hd = sqrt(e*e + n*n);
-  wpRange     = sqrt(hd*hd + u*u);
-  double az   = atan2(e,n) * RAD_TO_DEG;
+  wpRange[idx]     = sqrt(hd*hd + u*u);
+  double az        = atan2(e,n) * RAD_TO_DEG;
   if (az<0) az+=360.0;
-  wpAzimuth   = az;
-  wpElevation = atan2(u,hd) * RAD_TO_DEG;
-  wpValid     = true;
+  wpAzimuth[idx]   = az;
+  wpElevation[idx] = atan2(u,hd) * RAD_TO_DEG;
+  wpValid[idx]     = true;
 }
 
 
@@ -286,6 +300,81 @@ float getAzimuth() {
   float h = atan2f(-cy, cx) * 180.0f / M_PI;
   if (h < 0) h += 360.0f;
   return smoothHdg(h);
+}
+
+// ══════════════════════════════════════════════════════════
+//  TAK COT SENDER
+// ══════════════════════════════════════════════════════════
+
+// Build an ISO-8601 UTC timestamp from GPS date/time, with a
+// seconds offset applied (used for start=0, stale=+300).
+static void buildTimestamp(char* buf, size_t len, int offsetSec) {
+  int y = gps.date.year();
+  int mo = gps.date.month();
+  int d  = gps.date.day();
+  int h  = gps.time.hour();
+  int mi = gps.time.minute();
+  int s  = gps.time.second() + offsetSec;
+  // roll seconds into minutes/hours/days (good enough for stale window)
+  mi += s / 60;  s  %= 60;  if (s  < 0) { s  += 60; mi--; }
+  h  += mi / 60; mi %= 60;  if (mi < 0) { mi += 60; h--;  }
+  d  += h  / 24; h  %= 24;  if (h  < 0) { h  += 24; d--;  }
+  snprintf(buf, len, "%04d-%02d-%02dT%02d:%02d:%02dZ", y, mo, d, h, mi, s);
+}
+
+void initCOT() {
+  // beginMulticast only exists on some cores; use begin(port) for the
+  // sending side — we only transmit, never receive.
+  if (cotUDP.begin(COT_PORT)) {
+    cotOK = true;
+    Serial.println("[COT] UDP ready -> " COT_MCAST ":" + String(COT_PORT));
+  } else {
+    cotOK = false;
+    Serial.println("[COT] UDP init failed -- COT disabled, HUD unaffected");
+  }
+}
+
+void sendCOT() {
+  if (!cotOK) return;
+  if (!gps.location.isValid()) return;
+  if (!gps.date.isValid() || !gps.time.isValid()) return;
+
+  char tNow[32], tStale[32];
+  buildTimestamp(tNow,   sizeof(tNow),   0);
+  buildTimestamp(tStale, sizeof(tStale), 300);  // stale 5 min from now
+
+  double lat = gps.location.lat();
+  double lon = gps.location.lng();
+  double hae = gps.altitude.isValid() ? gps.altitude.meters() : 9999.0;
+  double ce  = gps.hdop.isValid()     ? gps.hdop.hdop() * 5.0 : 50.0;
+
+  char cot[640];
+  int n = snprintf(cot, sizeof(cot),
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<event version=\"2.0\" uid=\"" COT_UID "\" type=\"a-f-G-U-C\" "
+    "time=\"%s\" start=\"%s\" stale=\"%s\" how=\"m-g\">"
+    "<point lat=\"%.6f\" lon=\"%.6f\" hae=\"%.1f\" ce=\"%.1f\" le=\"9999\"/>"
+    "<detail><contact callsign=\"" COT_CALLSIGN "\"/></detail>"
+    "</event>",
+    tNow, tNow, tStale, lat, lon, hae, ce);
+
+  if (n <= 0 || n >= (int)sizeof(cot)) {
+    Serial.println("[COT] buffer overflow -- skipping send");
+    return;
+  }
+
+  if (!cotUDP.beginPacket(COT_MCAST, COT_PORT)) {
+    Serial.println("[COT] beginPacket failed -- disabling COT");
+    cotOK = false;
+    return;
+  }
+  cotUDP.write((const uint8_t*)cot, n);
+  if (!cotUDP.endPacket()) {
+    Serial.println("[COT] endPacket failed -- disabling COT");
+    cotOK = false;
+    return;
+  }
+  Serial.printf("[COT] sent %.6f,%.6f hae=%.1f ce=%.1f\n", lat, lon, hae, ce);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -454,14 +543,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
       <g id="ticks"></g>
 
-      <!-- Waypoint target marker — rotated by JS to wpAzimuth -->
-      <g id="wpMarker" style="display:none" transform="rotate(0,200,200)">
-        <polygon points="200,38 194,54 206,54" fill="#ffb02e"
-                 style="filter:drop-shadow(0 0 5px rgba(255,176,46,.9))"/>
-        <circle cx="200" cy="150" r="7" fill="none" stroke="#ffb02e" stroke-width="1.5" opacity=".8"/>
-        <line x1="200" y1="141" x2="200" y2="159" stroke="#ffb02e" stroke-width="1.2" opacity=".6"/>
-        <line x1="193" y1="150" x2="207" y2="150" stroke="#ffb02e" stroke-width="1.2" opacity=".6"/>
-      </g>
+      <!-- Waypoint markers (up to 10) — drawn by JS -->
+      <g id="wpMarkers"></g>
 
       <g class="needle" id="needle">
         <polygon points="200,46 210,128 200,112 190,128" fill="url(#ndl)"
@@ -507,21 +590,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   </div>
 
   <div class="mgrs-box" style="margin-top:14px">
-    <div class="k">Waypoint Target</div>
-    <div style="margin-top:8px">
-      <input id="wpMGRS" type="text" inputmode="text" autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck="false"
-        placeholder="e.g. 18S UJ 48291 83746"
-        style="width:100%;box-sizing:border-box;background:#0a1410;border:1px solid #1c6b48;border-radius:4px;color:#3dfca0;font-family:inherit;font-size:13px;padding:8px 10px;letter-spacing:1px;text-transform:uppercase;"/>
-    </div>
-    <button onclick="setWaypoint()" style="margin-top:8px;width:100%;background:transparent;border:1px solid #1c6b48;border-radius:4px;color:#ffb02e;font-family:inherit;font-size:12px;letter-spacing:2px;padding:8px;cursor:pointer;">SET WAYPOINT</button>
-    <div id="wpInfo" style="margin-top:10px;display:none;text-align:center">
-      <span style="color:#46584f;font-size:10px;letter-spacing:2px">AZ</span>
-      <span id="wpAz" style="font-size:22px;font-weight:700;margin:0 10px 0 4px">---&deg;</span>
-      <span style="color:#46584f;font-size:10px;letter-spacing:2px">EL</span>
-      <span id="wpEl" style="font-size:22px;font-weight:700;margin:0 10px 0 4px">---&deg;</span>
-      <span style="color:#46584f;font-size:10px;letter-spacing:2px">RANGE</span>
-      <span id="wpRng" style="font-size:22px;font-weight:700;margin-left:4px">---m</span>
-    </div>
+    <div class="k">Target Waypoints</div>
+    <div id="wpRows"></div>
   </div>
 
   <div class="controls">
@@ -794,28 +864,62 @@ function mgrsToLatLon(mgrs){
   var lon=lon0*Math.PI/180+(D-(1+2*T1+C1)*D*D*D/6+(5-2*C1+28*T1-3*C1*C1+8*ep2+24*T1*T1)*D*D*D*D*D/120)/cp;
   return{lat:lat*180/Math.PI,lon:lon*180/Math.PI};
 }
-function setWaypoint(){
-  var raw=document.getElementById('wpMGRS').value.trim();
+var wpData=[];
+function buildWpRows(){
+  var div=document.getElementById('wpRows'),s='';
+  for(var i=0;i<10;i++){
+    s+='<div style="display:flex;align-items:center;gap:6px;margin-top:6px">';
+    s+='<span id="wpn'+i+'" style="font-size:13px;font-weight:700;color:#46584f;min-width:16px;text-align:center">'+(i+1)+'</span>';
+    s+='<input id="wpi'+i+'" type="text" inputmode="text" autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="MGRS" style="flex:1;min-width:0;background:#0a1410;border:1px solid #1c6b48;border-radius:4px;color:#3dfca0;font-family:inherit;font-size:12px;padding:6px 8px;letter-spacing:1px;text-transform:uppercase;"/>';
+    s+='<button onclick="setWp('+i+')" style="background:transparent;border:1px solid #1c6b48;border-radius:4px;color:#ffb02e;font-family:inherit;font-size:11px;letter-spacing:1px;padding:6px 7px;cursor:pointer;">SET</button>';
+    s+='<button onclick="clrWp('+i+')" style="background:transparent;border:1px solid #1c6b48;border-radius:4px;color:#ff4d4d;font-family:inherit;font-size:11px;letter-spacing:1px;padding:6px 7px;cursor:pointer;">CLR</button>';
+    s+='</div>';
+    s+='<div id="wpr'+i+'" style="display:none;font-size:11px;color:#ffb02e;letter-spacing:1px;padding-left:22px;margin-bottom:2px"></div>';
+  }
+  div.innerHTML=s;
+}
+function setWp(i){
+  var raw=document.getElementById('wpi'+i).value.trim();
   if(!raw){alert('Enter an MGRS coordinate');return;}
   var ll;
   try{ll=mgrsToLatLon(raw);}catch(e){alert('Could not parse MGRS: '+e);return;}
-  fetch('/setwp?lat='+ll.lat.toFixed(6)+'&lon='+ll.lon.toFixed(6)).catch(function(){});
+  fetch('/setwp?i='+i+'&lat='+ll.lat.toFixed(6)+'&lon='+ll.lon.toFixed(6)).catch(function(){});
+}
+function clrWp(i){
+  document.getElementById('wpi'+i).value='';
+  fetch('/setwp?i='+i).catch(function(){});
+}
+function drawWpMarkers(wps){
+  var g=document.getElementById('wpMarkers'),s='';
+  wps.forEach(function(w,i){
+    if(!w.valid)return;
+    s+='<g transform="rotate('+w.az.toFixed(1)+',200,200)">';
+    s+='<polygon points="200,38 194,54 206,54" fill="#ffb02e"/>';
+    s+='<text x="200" y="71" fill="#ffb02e" font-size="11" font-weight="700" text-anchor="middle" font-family="ui-monospace,monospace">'+(i+1)+'</text>';
+    s+='</g>';
+  });
+  g.innerHTML=s;
 }
 function updateWaypoint(d){
-  var mk=document.getElementById('wpMarker');
-  if(d.wpvalid){
-    document.getElementById('wpInfo').style.display='block';
-    document.getElementById('wpAz').textContent=Math.round(d.wpaz)+'\u00b0';
-    document.getElementById('wpEl').textContent=d.wpel.toFixed(1)+'\u00b0';
-    var rng=d.wprng>1000?(d.wprng/1000).toFixed(2)+'km':Math.round(d.wprng)+'m';
-    document.getElementById('wpRng').textContent=rng;
-    mk.style.display='';
-    mk.setAttribute('transform','rotate('+d.wpaz.toFixed(1)+',200,200)');
-  } else {
-    mk.style.display='none';
-  }
+  wpData=d.wps||[];
+  drawWpMarkers(wpData);
+  wpData.forEach(function(w,i){
+    var numEl=document.getElementById('wpn'+i);
+    var rdrEl=document.getElementById('wpr'+i);
+    if(!numEl||!rdrEl)return;
+    if(w.valid){
+      numEl.style.color='#3dfca0';
+      var rng=w.rng>1000?(w.rng/1000).toFixed(2)+'km':Math.round(w.rng)+'m';
+      rdrEl.textContent='AZ '+Math.round(w.az)+'\u00b0 \u00b7 EL '+w.el.toFixed(1)+'\u00b0 \u00b7 '+rng;
+      rdrEl.style.display='block';
+    } else {
+      numEl.style.color='#46584f';
+      rdrEl.style.display='none';
+    }
+  });
 }
 applyDecl(0);
+buildWpRows();
 function tick(){ getData().then(d=>{render(d);link(true);}).catch(()=>link(false)); }
 tick();
 setInterval(tick, 500);
@@ -827,12 +931,17 @@ setInterval(tick, 500);
 //  WEB HANDLERS
 // ══════════════════════════════════════════════════════════
 void handleSetWaypoint() {
+  if (!server.hasArg("i")) { server.send(400, "text/plain", "missing i"); return; }
+  int idx = server.arg("i").toInt();
+  if (idx < 0 || idx > 9) { server.send(400, "text/plain", "i out of range"); return; }
   if (!server.hasArg("lat") || !server.hasArg("lon")) {
-    server.send(400, "text/plain", "missing lat/lon"); return;
+    wps[idx].set = false;
+    wpValid[idx] = false;
+    server.send(200, "text/plain", "cleared"); return;
   }
-  wp.lat = server.arg("lat").toDouble();
-  wp.lon = server.arg("lon").toDouble();
-  wp.set = true;
+  wps[idx].lat = server.arg("lat").toDouble();
+  wps[idx].lon = server.arg("lon").toDouble();
+  wps[idx].set = true;
   server.send(200, "text/plain", "ok");
 }
 
@@ -840,11 +949,23 @@ void handleRoot() { server.send_P(200, "text/html", PAGE_HTML); }
 
 void handleStatus() {
   bool fix = gps.location.isValid();
-  char j[420];
+  char wpBuf[512];
+  int wpos = 0;
+  wpBuf[wpos++] = '[';
+  for (int i = 0; i < 10; i++) {
+    if (i) wpBuf[wpos++] = ',';
+    wpos += snprintf(&wpBuf[wpos], sizeof(wpBuf) - wpos,
+      "{\"valid\":%s,\"az\":%.1f,\"el\":%.1f,\"rng\":%.0f}",
+      wpValid[i] ? "true" : "false",
+      wpAzimuth[i], wpElevation[i], wpRange[i]);
+  }
+  wpBuf[wpos++] = ']';
+  wpBuf[wpos]   = '\0';
+  char j[768];
   snprintf(j, sizeof(j),
     "{\"fix\":%s,\"sats\":%d,\"hdop\":%.1f,\"lat\":%.6f,\"lon\":%.6f,"
     "\"hdg\":%.1f,\"cal\":%s,\"decl\":%.1f,\"magwarn\":%s,\"fdev\":%d,\"cov\":%d,"
-    "\"wpvalid\":%s,\"wpaz\":%.1f,\"wpel\":%.1f,\"wprng\":%.0f}",
+    "\"wps\":%s}",
     fix ? "true" : "false",
     gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
     gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
@@ -856,8 +977,7 @@ void handleStatus() {
     magWarn ? "true" : "false",
     (int)(magDevPct * 100.0f),
     lastCalOK ? (int)(lastCalCov * 100.0f) : 0,
-    wpValid ? "true" : "false",
-    wpAzimuth, wpElevation, wpRange);
+    wpBuf);
   server.send(200, "application/json", j);
 }
 
@@ -926,6 +1046,10 @@ void setup() {
   // GPS UART
   Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
   Serial.printf("[GPS] UART RX=%d TX=%d @ %d baud\n", GPS_RX, GPS_TX, GPS_BAUD);
+
+  // COT — initialised last so web server is guaranteed up first
+  initCOT();
+
   Serial.println("=== ready ===\n");
 }
 
@@ -944,12 +1068,18 @@ void loop() {
     if (h >= 0) lastHdg = h;
   }
 
-  // update waypoint bearing
-  if (wp.set && gps.location.isValid()) {
+  // update all waypoint bearings
+  if (gps.location.isValid()) {
     static unsigned long tWp = 0;
     if (millis() - tWp >= 500) {
       tWp = millis();
-      calcWaypoint(gps.location.lat(), gps.location.lng(), 0, wp.lat, wp.lon, 0);
+      for (int i = 0; i < 10; i++) {
+        if (wps[i].set)
+          calcWaypoint(gps.location.lat(), gps.location.lng(), 0,
+                       wps[i].lat, wps[i].lon, 0, i);
+        else
+          wpValid[i] = false;
+      }
     }
   }
 
@@ -966,5 +1096,12 @@ void loop() {
         lastHdg, clients);
     else
       Serial.printf("[----] no fix  hdg(mag):%.1f  clients:%d\n", lastHdg, clients);
+  }
+
+  // COT send every 5 s (no-op if cotOK==false or no fix)
+  static unsigned long tCOT = 0;
+  if (millis() - tCOT >= COT_INTERVAL_MS) {
+    tCOT = millis();
+    sendCOT();
   }
 }
