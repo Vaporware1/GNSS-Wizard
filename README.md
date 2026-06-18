@@ -82,15 +82,36 @@ Press **RECALIBRATE 15s** in the HUD and rotate the device in a full, level circ
 
 ## Waypoint Targeting
 
-Enter a target latitude and longitude in the **Waypoint Target** panel and press **SET WAYPOINT**. While your GPS has a fix, the HUD will update every 500 ms with:
+Up to **10 target waypoints** can be set simultaneously using MGRS coordinates. Each slot has its own input row in the HUD with SET and CLR buttons. Active slots show a live Az/El/Range readout and display a numbered amber triangle marker on the compass bezel ring.
 
 | Field | Description |
 |---|---|
-| **AZ** | Azimuth to target (degrees true north) |
+| **AZ** | Azimuth to target (degrees, magnetic) |
 | **EL** | Elevation angle to target (degrees above/below horizon) |
 | **RANGE** | Distance to target (meters or km) |
 
 Targeting uses ECEF (Earth-Centered Earth-Fixed) math on the WGS84 ellipsoid for accurate results at any range.
+
+---
+
+## TAK / ATAK Integration
+
+The device broadcasts its GPS position as a **Cursor on Target (COT)** message over UDP multicast every 5 seconds when a fix is valid.
+
+| Setting | Value |
+|---|---|
+| Multicast address | `239.2.3.1` |
+| Port | `4242` |
+| COT type | `a-f-G-U-C` (friendly ground unit) |
+| Format | XML COT v2.0 |
+
+To receive in ATAK: connect your ATAK device to the **GNSS-WIZARD** Wi-Fi network, then add a UDP multicast input on `239.2.3.1:4242` under **Settings → Network Connections**.
+
+---
+
+## Architecture
+
+![GNSS-Wizard Architecture](docs/Flow%20Chart.png)
 
 ---
 
