@@ -33,6 +33,18 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <TinyGPSPlus.h>
+#include <WiFiUDP.h>
+
+// ── TAK COT (Cursor on Target) ─────────────────────────────
+// Sends SA (situational awareness) COT XML over UDP multicast
+// every COT_INTERVAL_MS when a GPS fix is valid.
+// If UDP init or any send fails, cotOK is set false and COT is
+// silently disabled — the web HUD continues working normally.
+#define COT_MCAST       "239.2.3.1"
+#define COT_PORT        4242
+#define COT_INTERVAL_MS 5000
+#define COT_UID         "GNSS-WIZARD-1"
+#define COT_CALLSIGN    "GNSS-WIZARD"
 
 #ifndef LED_BUILTIN
   #define LED_BUILTIN 2
@@ -52,6 +64,9 @@
 #define CFG_REG_C  0x62
 #define STATUS_REG 0x67
 #define OUTX_L_REG 0x68
+
+#define DEG_TO_RAD (M_PI / 180.0)
+#define RAD_TO_DEG (180.0 / M_PI)
 
 #define CAL_MS     15000
 #define SMOOTH_N   10
@@ -100,6 +115,8 @@ void saveCal() {
 // ══════════════════════════════════════════════════════════
 TinyGPSPlus gps;
 WebServer   server(80);
+WiFiUDP     cotUDP;
+bool        cotOK = false;
 
 bool  magOK       = false;
 bool  calibrating = false;
@@ -128,6 +145,49 @@ float smoothHdg(float deg) {
   float a = atan2f(ss / n, sc / n) * 180.0f / M_PI;
   return a < 0 ? a + 360.0f : a;
 }
+// ══════════════════════════════════════════════════════════
+//  WAYPOINT  (ECEF-based azimuth / elevation / range)
+// ══════════════════════════════════════════════════════════
+static const double WGS84_A  = 6378137.0;
+static const double WGS84_F  = 1.0 / 298.257223563;
+static const double WGS84_E2 = 2*WGS84_F - WGS84_F*WGS84_F;
+
+struct Waypoint { double lat=0, lon=0; bool set=false; };
+Waypoint wps[10];
+double wpAzimuth[10]={}, wpElevation[10]={}, wpRange[10]={};
+bool   wpValid[10]={};
+
+void llaToEcef(double lat_deg, double lon_deg, double alt,
+               double &x, double &y, double &z) {
+  double lat = lat_deg * DEG_TO_RAD;
+  double lon = lon_deg * DEG_TO_RAD;
+  double slat=sin(lat), clat=cos(lat), slon=sin(lon), clon=cos(lon);
+  double N = WGS84_A / sqrt(1.0 - WGS84_E2*slat*slat);
+  x = (N+alt)*clat*clon;
+  y = (N+alt)*clat*slon;
+  z = (N*(1.0-WGS84_E2)+alt)*slat;
+}
+
+void calcWaypoint(double lat1, double lon1, double alt1,
+                  double lat2, double lon2, double alt2, int idx) {
+  double x1,y1,z1,x2,y2,z2;
+  llaToEcef(lat1,lon1,alt1,x1,y1,z1);
+  llaToEcef(lat2,lon2,alt2,x2,y2,z2);
+  double dx=x2-x1, dy=y2-y1, dz=z2-z1;
+  double phi=lat1*DEG_TO_RAD, lam=lon1*DEG_TO_RAD;
+  double sp=sin(phi),cp=cos(phi),sl=sin(lam),cl=cos(lam);
+  double e = -sl*dx + cl*dy;
+  double n = -sp*cl*dx - sp*sl*dy + cp*dz;
+  double u =  cp*cl*dx + cp*sl*dy + sp*dz;
+  double hd = sqrt(e*e + n*n);
+  wpRange[idx]     = sqrt(hd*hd + u*u);
+  double az        = atan2(e,n) * RAD_TO_DEG;
+  if (az<0) az+=360.0;
+  wpAzimuth[idx]   = az;
+  wpElevation[idx] = atan2(u,hd) * RAD_TO_DEG;
+  wpValid[idx]     = true;
+}
+
 
 // ══════════════════════════════════════════════════════════
 //  MAGNETOMETER
@@ -243,6 +303,81 @@ float getAzimuth() {
 }
 
 // ══════════════════════════════════════════════════════════
+//  TAK COT SENDER
+// ══════════════════════════════════════════════════════════
+
+// Build an ISO-8601 UTC timestamp from GPS date/time, with a
+// seconds offset applied (used for start=0, stale=+300).
+static void buildTimestamp(char* buf, size_t len, int offsetSec) {
+  int y = gps.date.year();
+  int mo = gps.date.month();
+  int d  = gps.date.day();
+  int h  = gps.time.hour();
+  int mi = gps.time.minute();
+  int s  = gps.time.second() + offsetSec;
+  // roll seconds into minutes/hours/days (good enough for stale window)
+  mi += s / 60;  s  %= 60;  if (s  < 0) { s  += 60; mi--; }
+  h  += mi / 60; mi %= 60;  if (mi < 0) { mi += 60; h--;  }
+  d  += h  / 24; h  %= 24;  if (h  < 0) { h  += 24; d--;  }
+  snprintf(buf, len, "%04d-%02d-%02dT%02d:%02d:%02dZ", y, mo, d, h, mi, s);
+}
+
+void initCOT() {
+  // beginMulticast only exists on some cores; use begin(port) for the
+  // sending side — we only transmit, never receive.
+  if (cotUDP.begin(COT_PORT)) {
+    cotOK = true;
+    Serial.println("[COT] UDP ready -> " COT_MCAST ":" + String(COT_PORT));
+  } else {
+    cotOK = false;
+    Serial.println("[COT] UDP init failed -- COT disabled, HUD unaffected");
+  }
+}
+
+void sendCOT() {
+  if (!cotOK) return;
+  if (!gps.location.isValid()) return;
+  if (!gps.date.isValid() || !gps.time.isValid()) return;
+
+  char tNow[32], tStale[32];
+  buildTimestamp(tNow,   sizeof(tNow),   0);
+  buildTimestamp(tStale, sizeof(tStale), 300);  // stale 5 min from now
+
+  double lat = gps.location.lat();
+  double lon = gps.location.lng();
+  double hae = gps.altitude.isValid() ? gps.altitude.meters() : 9999.0;
+  double ce  = gps.hdop.isValid()     ? gps.hdop.hdop() * 5.0 : 50.0;
+
+  char cot[640];
+  int n = snprintf(cot, sizeof(cot),
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<event version=\"2.0\" uid=\"" COT_UID "\" type=\"a-f-G-U-C\" "
+    "time=\"%s\" start=\"%s\" stale=\"%s\" how=\"m-g\">"
+    "<point lat=\"%.6f\" lon=\"%.6f\" hae=\"%.1f\" ce=\"%.1f\" le=\"9999\"/>"
+    "<detail><contact callsign=\"" COT_CALLSIGN "\"/></detail>"
+    "</event>",
+    tNow, tNow, tStale, lat, lon, hae, ce);
+
+  if (n <= 0 || n >= (int)sizeof(cot)) {
+    Serial.println("[COT] buffer overflow -- skipping send");
+    return;
+  }
+
+  if (!cotUDP.beginPacket(COT_MCAST, COT_PORT)) {
+    Serial.println("[COT] beginPacket failed -- disabling COT");
+    cotOK = false;
+    return;
+  }
+  cotUDP.write((const uint8_t*)cot, n);
+  if (!cotUDP.endPacket()) {
+    Serial.println("[COT] endPacket failed -- disabling COT");
+    cotOK = false;
+    return;
+  }
+  Serial.printf("[COT] sent %.6f,%.6f hae=%.1f ce=%.1f\n", lat, lon, hae, ce);
+}
+
+// ══════════════════════════════════════════════════════════
 //  WEB PAGE  (served from flash)
 // ══════════════════════════════════════════════════════════
 const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
@@ -296,8 +431,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   }
   .stat{flex:1;text-align:center;border-right:1px solid var(--grid);padding:0 4px}
   .stat:last-child{border-right:none}
-  .stat .k{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase}
-  .stat .v{font-size:19px;font-weight:700;margin-top:3px;line-height:1;letter-spacing:.5px}
+  .stat .k{font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase}
+  .stat .v{font-size:22px;font-weight:700;margin-top:3px;line-height:1;letter-spacing:.5px}
   .v.good{color:var(--phos);text-shadow:0 0 8px rgba(61,252,160,.5)}
   .v.warn{color:var(--amber);text-shadow:0 0 8px rgba(255,176,46,.45)}
   .v.bad{color:var(--red);text-shadow:0 0 8px rgba(255,77,77,.5)}
@@ -316,24 +451,24 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   .az-block{position:absolute;top:26%;left:0;right:0;text-align:center}
   .az{font-size:38px;font-weight:800;line-height:.9;letter-spacing:-1px;
       text-shadow:0 0 14px rgba(61,252,160,.55)}
-  .az .deg{font-size:19px;vertical-align:super;margin-left:1px}
-  .az-mode{font-size:11px;letter-spacing:4px;color:var(--amber);margin-top:5px}
+  .az .deg{font-size:22px;vertical-align:super;margin-left:1px}
+  .az-mode{font-size:13px;letter-spacing:4px;color:var(--amber);margin-top:5px}
 
   .mgrs-box{
     margin-top:20px;border:1px solid var(--phos-dim);border-radius:6px;
     background:linear-gradient(180deg,rgba(61,252,160,.05),transparent);
     padding:12px 14px;text-align:center;
   }
-  .mgrs-box .k{font-size:9px;letter-spacing:3px;color:var(--dim);text-transform:uppercase}
-  .mgrs{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:1px;word-spacing:4px;
+  .mgrs-box .k{font-size:11px;letter-spacing:3px;color:var(--dim);text-transform:uppercase}
+  .mgrs{font-size:30px;font-weight:700;margin-top:6px;letter-spacing:1px;word-spacing:4px;
         text-shadow:0 0 10px rgba(61,252,160,.4);min-height:30px}
-  .latlon{font-size:11px;color:var(--dim);margin-top:7px;letter-spacing:.5px}
+  .latlon{font-size:13px;color:var(--dim);margin-top:7px;letter-spacing:.5px}
 
   .controls{margin-top:18px;display:flex;flex-direction:column;gap:12px}
   .toggle{display:flex;border:1px solid var(--phos-dim);border-radius:6px;overflow:hidden}
   .toggle button{
     flex:1;background:transparent;color:var(--dim);border:none;
-    font-family:inherit;font-size:13px;font-weight:700;letter-spacing:2px;
+    font-family:inherit;font-size:15px;font-weight:700;letter-spacing:2px;
     padding:11px 0;cursor:pointer;transition:all .15s;
   }
   .toggle button.on{background:rgba(61,252,160,.14);color:var(--phos);text-shadow:0 0 8px rgba(61,252,160,.5)}
@@ -342,7 +477,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     border:1px solid var(--phos-dim);border-radius:6px;padding:11px 13px;
     background:linear-gradient(180deg,rgba(61,252,160,.04),transparent);
   }
-  .decl .lab{font-size:9px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:9px}
+  .decl .lab{font-size:11px;letter-spacing:2px;color:var(--dim);text-transform:uppercase;margin-bottom:9px}
   .decl-row{display:flex;align-items:center;gap:10px}
   .step{
     width:46px;height:42px;flex:none;border:1px solid var(--phos-dim);border-radius:5px;
@@ -350,23 +485,23 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   }
   .step:active{background:rgba(61,252,160,.16)}
   .decl-val{
-    flex:1;text-align:center;font-size:24px;font-weight:700;
+    flex:1;text-align:center;font-size:28px;font-weight:700;
     text-shadow:0 0 10px rgba(61,252,160,.4)
   }
-  .decl-val small{font-size:12px;color:var(--amber);letter-spacing:1px;display:block;margin-top:2px}
-  .hint{font-size:10px;color:var(--dim);margin-top:9px;line-height:1.4;letter-spacing:.3px}
+  .decl-val small{font-size:14px;color:var(--amber);letter-spacing:1px;display:block;margin-top:2px}
+  .hint{font-size:12px;color:var(--dim);margin-top:9px;line-height:1.4;letter-spacing:.3px}
 
   .footer{margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
-  .footer .cal{font-size:10px;letter-spacing:1px;color:var(--dim)}
+  .footer .cal{font-size:12px;letter-spacing:1px;color:var(--dim)}
   .footer button{
     background:transparent;border:1px solid var(--phos-dim);border-radius:6px;
-    color:var(--amber);font-family:inherit;font-size:11px;letter-spacing:1px;
+    color:var(--amber);font-family:inherit;font-size:13px;letter-spacing:1px;
     padding:9px 12px;cursor:pointer;
   }
   .footer button:active{background:rgba(255,176,46,.12)}
 
   .banner{
-    margin-top:14px;text-align:center;font-size:11px;letter-spacing:2px;
+    margin-top:14px;text-align:center;font-size:13px;letter-spacing:2px;
     color:var(--amber);border:1px dashed var(--phos-dim);border-radius:6px;padding:8px;
   }
 </style>
@@ -407,6 +542,9 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       <circle cx="200" cy="200" r="150" fill="none" stroke="#3dfca0" stroke-width="1" opacity=".25"/>
 
       <g id="ticks"></g>
+
+      <!-- Waypoint markers (up to 10) — drawn by JS -->
+      <g id="wpMarkers"></g>
 
       <g class="needle" id="needle">
         <polygon points="200,46 210,128 200,112 190,128" fill="url(#ndl)"
@@ -449,6 +587,11 @@ const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     <div class="k">Grid &middot; MGRS</div>
     <div class="mgrs" id="mgrs">----------</div>
     <div class="latlon" id="latlon">lat --.-----   lon --.-----</div>
+  </div>
+
+  <div class="mgrs-box" style="margin-top:14px">
+    <div class="k">Target Waypoints</div>
+    <div id="wpRows"></div>
   </div>
 
   <div class="controls">
@@ -598,6 +741,7 @@ function letter100k(column,row,parm){
 function getData(){ return fetch('/status').then(r=>r.json()); }
 
 function render(d){
+  updateWaypoint(d);
   if(d.fix){
     els.fixDot.className='dot good';
     els.fixT.textContent='LOCK';
@@ -681,7 +825,101 @@ function link(ok){
   }
 }
 
+function mgrsToLatLon(mgrs){
+  var s=mgrs.replace(/\s/g,'').toUpperCase();
+  var m=s.match(/^(\d{1,2})([C-HJ-NP-X])([A-HJ-NP-Z])([A-HJ-NP-V])(\d+)$/);
+  if(!m)throw'Invalid MGRS';
+  var zone=+m[1],band=m[2],sq1=m[3],sq2=m[4],nums=m[5];
+  if(nums.length%2!==0)nums+='5';
+  var prec=nums.length>>1,sc=Math.pow(10,5-prec);
+  var E100=+nums.slice(0,prec)*sc,N100=+nums.slice(prec)*sc;
+  var COLS=['ABCDEFGH','JKLMNPQR','STUVWXYZ','ABCDEFGH','JKLMNPQR','STUVWXYZ'];
+  var ci=COLS[(zone-1)%6].indexOf(sq1);if(ci<0)throw'Bad col';
+  var E=(ci+1)*100000+E100;
+  var ROWS=['ABCDEFGHJKLMNPQRSTUV','FGHJKLMNPQRSTUVABCDE'];
+  var ri=ROWS[zone%2===0?1:0].indexOf(sq2);if(ri<0)throw'Bad row';
+  var N100f=ri*100000+N100;
+  var BANDS='CDEFGHJKLMNPQRSTUVWX';
+  var bi=BANDS.indexOf(band);if(bi<0)throw'Bad band';
+  var a=6378137,e2=0.00669437999014,k0=0.9996;
+  function mArc(ph){var e4=e2*e2,e6=e4*e2;
+    return a*((1-e2/4-3*e4/64-5*e6/256)*ph-(3*e2/8+3*e4/32+45*e6/1024)*Math.sin(2*ph)+(15*e4/256+45*e6/1024)*Math.sin(4*ph)-(35*e6/3072)*Math.sin(6*ph));}
+  var phi=(-80+bi*8)*Math.PI/180;
+  var Nf=k0*mArc(phi);
+  var northHemi=band>='N';
+  if(!northHemi)Nf+=10000000;
+  var cyc=Math.floor(Nf/2000000)*2000000;
+  var N=N100f%2000000+cyc;
+  if(N<Nf-100000)N+=2000000;
+  if(!northHemi)N-=10000000;
+  var ep2=e2/(1-e2),M=N/k0;
+  var mu=M/(a*(1-e2/4-3*e2*e2/64-5*e2*e2*e2/256));
+  var e1=(1-Math.sqrt(1-e2))/(1+Math.sqrt(1-e2));
+  var phi1=mu+(3*e1/2-27*e1*e1*e1/32)*Math.sin(2*mu)+(21*e1*e1/16-55*e1*e1*e1*e1/32)*Math.sin(4*mu)+(151*e1*e1*e1/96)*Math.sin(6*mu);
+  var sp=Math.sin(phi1),cp=Math.cos(phi1),tp=Math.tan(phi1);
+  var N1=a/Math.sqrt(1-e2*sp*sp),T1=tp*tp,C1=ep2*cp*cp;
+  var R1=a*(1-e2)/Math.pow(1-e2*sp*sp,1.5),D=(E-500000)/(N1*k0);
+  var lat=phi1-(N1*tp/R1)*(D*D/2-(5+3*T1+10*C1-4*C1*C1-9*ep2)*D*D*D*D/24+(61+90*T1+298*C1+45*T1*T1-252*ep2-3*C1*C1)*D*D*D*D*D*D/720);
+  var lon0=(zone-1)*6-180+3;
+  var lon=lon0*Math.PI/180+(D-(1+2*T1+C1)*D*D*D/6+(5-2*C1+28*T1-3*C1*C1+8*ep2+24*T1*T1)*D*D*D*D*D/120)/cp;
+  return{lat:lat*180/Math.PI,lon:lon*180/Math.PI};
+}
+var wpData=[];
+function buildWpRows(){
+  var div=document.getElementById('wpRows'),s='';
+  for(var i=0;i<10;i++){
+    s+='<div style="display:flex;align-items:center;gap:6px;margin-top:6px">';
+    s+='<span id="wpn'+i+'" style="font-size:13px;font-weight:700;color:#46584f;min-width:16px;text-align:center">'+(i+1)+'</span>';
+    s+='<input id="wpi'+i+'" type="text" inputmode="text" autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="MGRS" style="flex:1;min-width:0;background:#0a1410;border:1px solid #1c6b48;border-radius:4px;color:#3dfca0;font-family:inherit;font-size:12px;padding:6px 8px;letter-spacing:1px;text-transform:uppercase;"/>';
+    s+='<button onclick="setWp('+i+')" style="background:transparent;border:1px solid #1c6b48;border-radius:4px;color:#ffb02e;font-family:inherit;font-size:11px;letter-spacing:1px;padding:6px 7px;cursor:pointer;">SET</button>';
+    s+='<button onclick="clrWp('+i+')" style="background:transparent;border:1px solid #1c6b48;border-radius:4px;color:#ff4d4d;font-family:inherit;font-size:11px;letter-spacing:1px;padding:6px 7px;cursor:pointer;">CLR</button>';
+    s+='</div>';
+    s+='<div id="wpr'+i+'" style="display:none;font-size:11px;color:#ffb02e;letter-spacing:1px;padding-left:22px;margin-bottom:2px"></div>';
+  }
+  div.innerHTML=s;
+}
+function setWp(i){
+  var raw=document.getElementById('wpi'+i).value.trim();
+  if(!raw){alert('Enter an MGRS coordinate');return;}
+  var ll;
+  try{ll=mgrsToLatLon(raw);}catch(e){alert('Could not parse MGRS: '+e);return;}
+  fetch('/setwp?i='+i+'&lat='+ll.lat.toFixed(6)+'&lon='+ll.lon.toFixed(6)).catch(function(){});
+}
+function clrWp(i){
+  document.getElementById('wpi'+i).value='';
+  fetch('/setwp?i='+i).catch(function(){});
+}
+function drawWpMarkers(wps){
+  var g=document.getElementById('wpMarkers'),s='';
+  wps.forEach(function(w,i){
+    if(!w.valid)return;
+    s+='<g transform="rotate('+w.az.toFixed(1)+',200,200)">';
+    s+='<polygon points="200,38 194,54 206,54" fill="#ffb02e"/>';
+    s+='<text x="200" y="71" fill="#ffb02e" font-size="11" font-weight="700" text-anchor="middle" font-family="ui-monospace,monospace">'+(i+1)+'</text>';
+    s+='</g>';
+  });
+  g.innerHTML=s;
+}
+function updateWaypoint(d){
+  wpData=d.wps||[];
+  drawWpMarkers(wpData);
+  wpData.forEach(function(w,i){
+    var numEl=document.getElementById('wpn'+i);
+    var rdrEl=document.getElementById('wpr'+i);
+    if(!numEl||!rdrEl)return;
+    if(w.valid){
+      numEl.style.color='#3dfca0';
+      var rng=w.rng>1000?(w.rng/1000).toFixed(2)+'km':Math.round(w.rng)+'m';
+      rdrEl.textContent='AZ '+Math.round(w.az)+'\u00b0 \u00b7 EL '+w.el.toFixed(1)+'\u00b0 \u00b7 '+rng;
+      rdrEl.style.display='block';
+    } else {
+      numEl.style.color='#46584f';
+      rdrEl.style.display='none';
+    }
+  });
+}
 applyDecl(0);
+buildWpRows();
 function tick(){ getData().then(d=>{render(d);link(true);}).catch(()=>link(false)); }
 tick();
 setInterval(tick, 500);
@@ -692,14 +930,42 @@ setInterval(tick, 500);
 // ══════════════════════════════════════════════════════════
 //  WEB HANDLERS
 // ══════════════════════════════════════════════════════════
+void handleSetWaypoint() {
+  if (!server.hasArg("i")) { server.send(400, "text/plain", "missing i"); return; }
+  int idx = server.arg("i").toInt();
+  if (idx < 0 || idx > 9) { server.send(400, "text/plain", "i out of range"); return; }
+  if (!server.hasArg("lat") || !server.hasArg("lon")) {
+    wps[idx].set = false;
+    wpValid[idx] = false;
+    server.send(200, "text/plain", "cleared"); return;
+  }
+  wps[idx].lat = server.arg("lat").toDouble();
+  wps[idx].lon = server.arg("lon").toDouble();
+  wps[idx].set = true;
+  server.send(200, "text/plain", "ok");
+}
+
 void handleRoot() { server.send_P(200, "text/html", PAGE_HTML); }
 
 void handleStatus() {
   bool fix = gps.location.isValid();
-  char j[320];
+  char wpBuf[512];
+  int wpos = 0;
+  wpBuf[wpos++] = '[';
+  for (int i = 0; i < 10; i++) {
+    if (i) wpBuf[wpos++] = ',';
+    wpos += snprintf(&wpBuf[wpos], sizeof(wpBuf) - wpos,
+      "{\"valid\":%s,\"az\":%.1f,\"el\":%.1f,\"rng\":%.0f}",
+      wpValid[i] ? "true" : "false",
+      wpAzimuth[i], wpElevation[i], wpRange[i]);
+  }
+  wpBuf[wpos++] = ']';
+  wpBuf[wpos]   = '\0';
+  char j[768];
   snprintf(j, sizeof(j),
     "{\"fix\":%s,\"sats\":%d,\"hdop\":%.1f,\"lat\":%.6f,\"lon\":%.6f,"
-    "\"hdg\":%.1f,\"cal\":%s,\"decl\":%.1f,\"magwarn\":%s,\"fdev\":%d,\"cov\":%d}",
+    "\"hdg\":%.1f,\"cal\":%s,\"decl\":%.1f,\"magwarn\":%s,\"fdev\":%d,\"cov\":%d,"
+    "\"wps\":%s}",
     fix ? "true" : "false",
     gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
     gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
@@ -710,7 +976,8 @@ void handleStatus() {
     cfg.declination,
     magWarn ? "true" : "false",
     (int)(magDevPct * 100.0f),
-    lastCalOK ? (int)(lastCalCov * 100.0f) : 0);
+    lastCalOK ? (int)(lastCalCov * 100.0f) : 0,
+    wpBuf);
   server.send(200, "application/json", j);
 }
 
@@ -764,6 +1031,7 @@ void setup() {
   server.on("/status",  HTTP_GET, handleStatus);
   server.on("/setdecl", HTTP_GET, handleSetDecl);
   server.on("/recal",   HTTP_GET, handleRecal);
+  server.on("/setwp",    HTTP_GET, handleSetWaypoint);
   server.begin();
   Serial.println("[WEB] server on :80");
 
@@ -778,6 +1046,10 @@ void setup() {
   // GPS UART
   Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
   Serial.printf("[GPS] UART RX=%d TX=%d @ %d baud\n", GPS_RX, GPS_TX, GPS_BAUD);
+
+  // COT — initialised last so web server is guaranteed up first
+  initCOT();
+
   Serial.println("=== ready ===\n");
 }
 
@@ -796,6 +1068,21 @@ void loop() {
     if (h >= 0) lastHdg = h;
   }
 
+  // update all waypoint bearings
+  if (gps.location.isValid()) {
+    static unsigned long tWp = 0;
+    if (millis() - tWp >= 500) {
+      tWp = millis();
+      for (int i = 0; i < 10; i++) {
+        if (wps[i].set)
+          calcWaypoint(gps.location.lat(), gps.location.lng(), 0,
+                       wps[i].lat, wps[i].lon, 0, i);
+        else
+          wpValid[i] = false;
+      }
+    }
+  }
+
   // serial heartbeat every 2 s
   static unsigned long tLog = 0;
   if (millis() - tLog >= 2000) {
@@ -809,5 +1096,12 @@ void loop() {
         lastHdg, clients);
     else
       Serial.printf("[----] no fix  hdg(mag):%.1f  clients:%d\n", lastHdg, clients);
+  }
+
+  // COT send every 5 s (no-op if cotOK==false or no fix)
+  static unsigned long tCOT = 0;
+  if (millis() - tCOT >= COT_INTERVAL_MS) {
+    tCOT = millis();
+    sendCOT();
   }
 }
